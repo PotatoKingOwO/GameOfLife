@@ -1,0 +1,1 @@
+print("Hello, welcome to the Game of Life!")
