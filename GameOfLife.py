@@ -1,37 +1,32 @@
-
-import pygame
 import random
+import pygame
 
 pygame.init()
 
-width = 800
-height = 600
-
-cell_size = 5
-min_cell_size = 2
-max_cell_size = 40
-
-cols = width // cell_size
-rows = height // cell_size
+WIDTH = 800
+HEIGHT = 600
+CELL_SIZE = 5
+MIN_CELL_SIZE = 2
+MAX_CELL_SIZE = 40
 
 camera_x = 0
 camera_y = 0
-
-# Posouvání mapy
 panning = False
 pan_start_mouse = (0, 0)
 pan_start_camera = (0, 0)
 
-background_color = (12, 15, 20)
-grid_color = (30, 38, 45)
+BACKGROUND_COLOR = (12, 15, 20)
+GRID_COLOR = (30, 38, 45)
+ALIVE_COLOR = (80, 220, 160)
+PREVIEW_COLOR = (255, 220, 100)
 
-grid = []
+alive_cells = set()
+
 running_simulation = False
+generation_interval = 150
 last_update_time = 0
-generation_interval = 250
 generation = 0
 
-# Knihovna vzorů
 PATTERNS = {
     "Glider": [
         (1, 0), (2, 1), (0, 2), (1, 2), (2, 2)
@@ -45,8 +40,7 @@ PATTERNS = {
     ],
     "Beacon": [
         (0, 0), (1, 0),
-        (0, 1),
-        (2, 2), (3, 2),
+        (0, 1), (3, 2),
         (2, 3), (3, 3)
     ],
     "Pulsar": [
@@ -72,413 +66,281 @@ PATTERNS = {
     ]
 }
 
-screen = pygame.display.set_mode((width, height))
-pygame.display.set_caption("Game of Life")
-
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Game of Life — Infinite World")
 font = pygame.font.SysFont(None, 28)
 small_font = pygame.font.SysFont(None, 20)
 clock = pygame.time.Clock()
+pattern_names = list(PATTERNS.keys())
+selected_pattern = None
+show_pattern_menu = False
 
 
-def count_neighbors(grid, row, col):
+def count_neighbors(cells, x, y):
+    """Vrátí počet živých sousedů buňky (x, y)."""
     count = 0
-
-    for i in range(-1, 2):
-        for j in range(-1, 2):
-            if i == 0 and j == 0:
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == 0 and dy == 0:
                 continue
-
-            r = (row + i) % rows
-            c = (col + j) % cols
-            count += grid[r][c]
-
+            if (x + dx, y + dy) in cells:
+                count += 1
     return count
 
 
-def next_generation(grid):
-    new_grid = []
+def next_generation(cells):
+    """Spočítá další generaci bez procházení celého nekonečného světa."""
+    candidates = set()
 
-    for row in range(rows):
-        new_row = []
+    for x, y in cells:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                candidates.add((x + dx, y + dy))
 
-        for col in range(cols):
-            neighbours = count_neighbors(grid, row, col)
-            alive = grid[row][col] == 1
+    new_cells = set()
+    for x, y in candidates:
+        neighbors = count_neighbors(cells, x, y)
+        is_alive = (x, y) in cells
 
-            if alive and neighbours in (2, 3):
-                new_row.append(1)
-            elif not alive and neighbours == 3:
-                new_row.append(1)
-            else:
-                new_row.append(0)
+        if neighbors == 3 or (is_alive and neighbors == 2):
+            new_cells.add((x, y))
 
-        new_grid.append(new_row)
-
-    return new_grid
+    return new_cells
 
 
-def randomize_grid(grid):
-    for row in range(rows):
-        for col in range(cols):
-            grid[row][col] = 1 if random.random() < 0.3 else 0
+def clear_world():
+    alive_cells.clear()
 
 
-def clear_grid(grid):
-    for row in range(rows):
-        for col in range(cols):
-            grid[row][col] = 0
+def randomize_visible_area():
+    """Náhodně osází oblast, kterou právě vidí kamera."""
+    alive_cells.clear()
+    left = camera_x // CELL_SIZE
+    top = camera_y // CELL_SIZE
+    right = (camera_x + WIDTH) // CELL_SIZE + 1
+    bottom = (camera_y + HEIGHT) // CELL_SIZE + 1
+
+    max_random_cells = 180000
+    if (right - left) * (bottom - top) > max_random_cells:
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+        half_w = 60
+        half_h = 45
+        left, right = center_x - half_w, center_x + half_w
+        top, bottom = center_y - half_h, center_y + half_h
+
+    for y in range(top, bottom):
+        for x in range(left, right):
+            if random.random() < 0.22:
+                alive_cells.add((x, y))
 
 
 def screen_to_cell(pos):
+    """Převede pozici myši na souřadnice buňky ve světě."""
     mouse_x, mouse_y = pos
-
-    col = (mouse_x + camera_x) // cell_size
-    row = (mouse_y + camera_y) // cell_size
-
-    if 0 <= row < rows and 0 <= col < cols:
-        return row, col
-
-    return None
+    world_x = (mouse_x + camera_x) // CELL_SIZE
+    world_y = (mouse_y + camera_y) // CELL_SIZE
+    return world_x, world_y
 
 
-def place_pattern(pattern_name, anchor_row, anchor_col):
+def place_pattern(pattern_name, anchor_x, anchor_y):
     for dx, dy in PATTERNS[pattern_name]:
-        col = anchor_col + dx
-        row = anchor_row + dy
-
-        if 0 <= row < rows and 0 <= col < cols:
-            grid[row][col] = 1
+        alive_cells.add((anchor_x + dx, anchor_y + dy))
 
 
-for row in range(rows):
-    grid.append([0] * cols)
+def draw_cell(x, y, color, outline=0):
+    screen_x = x * CELL_SIZE - camera_x
+    screen_y = y * CELL_SIZE - camera_y
+    if -CELL_SIZE < screen_x < WIDTH and -CELL_SIZE < screen_y < HEIGHT:
+        pygame.draw.rect(
+            screen,
+            color,
+            (int(screen_x), int(screen_y), CELL_SIZE, CELL_SIZE),
+            outline
+        )
 
-randomize_grid(grid)
 
 running = True
-selected_pattern = None
-show_pattern_menu = False
-pattern_names = list(PATTERNS.keys())
 
 while running:
     for event in pygame.event.get():
-
         if event.type == pygame.QUIT:
             running = False
 
-        if event.type == pygame.KEYDOWN:
+        elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 selected_pattern = None
                 show_pattern_menu = False
 
             elif event.key == pygame.K_SPACE:
                 running_simulation = not running_simulation
+                last_update_time = pygame.time.get_ticks()
 
             elif event.key == pygame.K_r:
-                randomize_grid(grid)
+                randomize_visible_area()
                 running_simulation = False
                 generation = 0
 
             elif event.key == pygame.K_c:
-                clear_grid(grid)
+                clear_world()
                 running_simulation = False
                 generation = 0
 
             elif event.key == pygame.K_w:
-                generation_interval = max(
-                    50, generation_interval - 200
-                )
+                generation_interval = max(30, generation_interval - 25)
 
             elif event.key == pygame.K_s:
-                generation_interval = min(
-                    450, generation_interval + 200
-                )
+                generation_interval = min(1000, generation_interval + 25)
 
             elif event.key == pygame.K_p:
                 show_pattern_menu = not show_pattern_menu
                 selected_pattern = None
 
-            # Rychlý výběr vzorů klávesami 1–6
             elif event.key == pygame.K_1:
                 selected_pattern = "Glider"
                 show_pattern_menu = False
-
             elif event.key == pygame.K_2:
                 selected_pattern = "Blinker"
                 show_pattern_menu = False
-
             elif event.key == pygame.K_3:
                 selected_pattern = "Toad"
                 show_pattern_menu = False
-
             elif event.key == pygame.K_4:
                 selected_pattern = "Beacon"
                 show_pattern_menu = False
-
             elif event.key == pygame.K_5:
                 selected_pattern = "Pulsar"
                 show_pattern_menu = False
-
             elif event.key == pygame.K_6:
                 selected_pattern = "Gosper Glider Gun"
                 show_pattern_menu = False
 
-        # Zoom kolečkem myši
-        if event.type == pygame.MOUSEWHEEL:
+        elif event.type == pygame.MOUSEWHEEL:
             mouse_x, mouse_y = pygame.mouse.get_pos()
-            old_size = cell_size
+            old_size = CELL_SIZE
 
             if event.y > 0:
-                cell_size = min(max_cell_size, cell_size + 1)
+                CELL_SIZE = min(MAX_CELL_SIZE, CELL_SIZE + 1)
             elif event.y < 0:
-                cell_size = max(min_cell_size, cell_size - 1)
+                CELL_SIZE = max(MIN_CELL_SIZE, CELL_SIZE - 1)
 
-            if cell_size != old_size:
-                camera_x = int(
-                    (mouse_x + camera_x) * cell_size
-                    / old_size - mouse_x
-                )
-                camera_y = int(
-                    (mouse_y + camera_y) * cell_size
-                    / old_size - mouse_y
-                )
+            if CELL_SIZE != old_size:
+                # Zoomujeme kolem kurzoru: buňka pod kurzorem zůstane na místě.
+                camera_x = int((mouse_x + camera_x) * CELL_SIZE / old_size - mouse_x)
+                camera_y = int((mouse_y + camera_y) * CELL_SIZE / old_size - mouse_y)
 
-                camera_x = max(
-                    0, min(camera_x, cols * cell_size - width)
-                )
-                camera_y = max(
-                    0, min(camera_y, rows * cell_size - height)
-                )
-
-        if event.type == pygame.MOUSEBUTTONDOWN:
-
-            # Prostřední tlačítko: začni posouvat mapu
-            if event.button == 2:
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 2:  # prostřední tlačítko = posun kamery
                 panning = True
                 pan_start_mouse = event.pos
                 pan_start_camera = (camera_x, camera_y)
 
-            elif event.button == 1:
-
-                # Kliknutí na položku v nabídce vzorů
+            elif event.button == 1:  # levé tlačítko = přidání buňky / vzor
                 if show_pattern_menu:
                     menu_x, menu_y = 20, 70
                     item_height = 30
-
                     for index, name in enumerate(pattern_names):
                         rect = pygame.Rect(
-                            menu_x,
-                            menu_y + index * item_height,
-                            260,
-                            item_height
+                            menu_x, menu_y + index * item_height, 260, item_height
                         )
-
                         if rect.collidepoint(event.pos):
                             selected_pattern = name
                             show_pattern_menu = False
                             break
-
                 else:
-                    cell = screen_to_cell(event.pos)
+                    x, y = screen_to_cell(event.pos)
+                    if selected_pattern:
+                        place_pattern(selected_pattern, x, y)
+                        selected_pattern = None
+                    else:
+                        alive_cells.add((x, y))
 
-                    if cell is not None:
-                        row, col = cell
-
-                        if selected_pattern:
-                            place_pattern(
-                                selected_pattern, row, col
-                            )
-                            selected_pattern = None
-                        else:
-                            grid[row][col] = 1
-
-            # Pravé tlačítko: smazání buňky
-            elif event.button == 3:
+            elif event.button == 3:  # pravé tlačítko = smazání buňky
                 if not selected_pattern and not show_pattern_menu:
-                    cell = screen_to_cell(event.pos)
+                    alive_cells.discard(screen_to_cell(event.pos))
 
-                    if cell is not None:
-                        row, col = cell
-                        grid[row][col] = 0
-
-        if event.type == pygame.MOUSEBUTTONUP:
+        elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 2:
                 panning = False
 
-        if event.type == pygame.MOUSEMOTION:
-
+        elif event.type == pygame.MOUSEMOTION:
             if panning:
                 dx = pan_start_mouse[0] - event.pos[0]
                 dy = pan_start_mouse[1] - event.pos[1]
-
-                camera_x = max(
-                    0,
-                    min(
-                        pan_start_camera[0] + dx,
-                        cols * cell_size - width
-                    )
-                )
-                camera_y = max(
-                    0,
-                    min(
-                        pan_start_camera[1] + dy,
-                        rows * cell_size - height
-                    )
-                )
-
+                # Žádné omezování hranic: kamera se může pohybovat kamkoliv.
+                camera_x = pan_start_camera[0] + dx
+                camera_y = pan_start_camera[1] + dy
             elif not show_pattern_menu and not selected_pattern:
                 buttons = pygame.mouse.get_pressed()
+                x, y = screen_to_cell(event.pos)
+                if buttons[0]:
+                    alive_cells.add((x, y))
+                elif buttons[2]:
+                    alive_cells.discard((x, y))
 
-                if buttons[0] or buttons[2]:
-                    cell = screen_to_cell(event.pos)
+    screen.fill(BACKGROUND_COLOR)
 
-                    if cell is not None:
-                        row, col = cell
+    for x, y in alive_cells:
+        screen_x = x * CELL_SIZE - camera_x
+        screen_y = y * CELL_SIZE - camera_y
+        if -CELL_SIZE < screen_x < WIDTH and -CELL_SIZE < screen_y < HEIGHT:
+            # Jemný barevný přechod podle pozice buňky na obrazovce.
+            gx = max(0.0, min(1.0, screen_x / max(1, WIDTH)))
+            gy = max(0.0, min(1.0, screen_y / max(1, HEIGHT)))
+            red = int(35 + 65 * gx)
+            green = int(190 + 40 * (1 - gy))
+            blue = int(130 + 100 * gy)
+            pygame.draw.rect(
+                screen, (red, green, blue),
+                (int(screen_x), int(screen_y), CELL_SIZE, CELL_SIZE)
+            )
 
-                        if buttons[0]:
-                            grid[row][col] = 1
-                        elif buttons[2]:
-                            grid[row][col] = 0
-
-    screen.fill(background_color)
-
-    # Vykreslení živých buněk
-    for row in range(rows):
-        for col in range(cols):
-            if grid[row][col] == 1:
-                x = col / max(1, cols - 1)
-                y = row / max(1, rows - 1)
-
-                red = int(30 + 100 * x)
-                green = int(220 - 100 * y)
-                blue = int(100 + 155 * (1 - x) * y)
-
-                screen_x = col * cell_size - camera_x
-                screen_y = row * cell_size - camera_y
-
-                if (
-                    -cell_size < screen_x < width
-                    and -cell_size < screen_y < height
-                ):
-                    pygame.draw.rect(
-                        screen,
-                        (red, green, blue),
-                        (
-                            screen_x,
-                            screen_y,
-                            cell_size,
-                            cell_size
-                        )
-                    )
-
-    # Mřížka
-    start_x = (
-        int(camera_x // cell_size) * cell_size - camera_x
-    )
-    start_y = (
-        int(camera_y // cell_size) * cell_size - camera_y
-    )
-
-    for x in range(int(start_x), width, cell_size):
-        pygame.draw.line(
-            screen, grid_color, (x, 0), (x, height)
-        )
-
-    for y in range(int(start_y), height, cell_size):
-        pygame.draw.line(
-            screen, grid_color, (0, y), (width, y)
-        )
-
-    alive_cells = sum(sum(row) for row in grid)
+    start_x = -(camera_x % CELL_SIZE)
+    start_y = -(camera_y % CELL_SIZE)
+    for x in range(int(start_x), WIDTH, CELL_SIZE):
+        pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
+    for y in range(int(start_y), HEIGHT, CELL_SIZE):
+        pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
 
     status = "RUNNING" if running_simulation else "PAUSED"
-
     generation_text = font.render(
-        f"Generation: {generation}  "
-        f"Alive Cells: {alive_cells}  {status}",
-        True,
-        (255, 255, 255)
+        f"Generation: {generation}  Alive Cells: {len(alive_cells)}  {status}",
+        True, (255, 255, 255)
     )
     screen.blit(generation_text, (10, 10))
 
     help_text = small_font.render(
-        "SPACE: Play/Pause | R: Random | C: Clear | "
-        "W/S: Speed | P: Patterns | Middle mouse: Pan",
-        True,
-        (190, 200, 210)
+        "SPACE: Play/Pause | R: Random | C: Clear | W/S: Speed | P: Patterns | 1-6 Quick Patterns | Middle mouse: Pan",
+        True, (190, 200, 210)
     )
-    screen.blit(help_text, (10, height - 24))
+    screen.blit(help_text, (10, HEIGHT - 24))
 
-    # Nápověda při umisťování vzoru
     if selected_pattern:
         hint = small_font.render(
             f"Click to place: {selected_pattern} | ESC: Cancel",
-            True,
-            (255, 220, 100)
+            True, PREVIEW_COLOR
         )
         screen.blit(hint, (10, 38))
+        anchor_x, anchor_y = screen_to_cell(pygame.mouse.get_pos())
+        for dx, dy in PATTERNS[selected_pattern]:
+            draw_cell(anchor_x + dx, anchor_y + dy, PREVIEW_COLOR, 1)
 
-        # Náhled vzoru pod kurzorem
-        cell = screen_to_cell(pygame.mouse.get_pos())
-
-        if cell is not None:
-            anchor_row, anchor_col = cell
-
-            for dx, dy in PATTERNS[selected_pattern]:
-                col = anchor_col + dx
-                row = anchor_row + dy
-
-                if 0 <= row < rows and 0 <= col < cols:
-                    screen_x = col * cell_size - camera_x
-                    screen_y = row * cell_size - camera_y
-
-                    pygame.draw.rect(
-                        screen,
-                        (255, 220, 100),
-                        (
-                            screen_x,
-                            screen_y,
-                            cell_size,
-                            cell_size
-                        ),
-                        1
-                    )
-
-    # Nabídka vzorů
     if show_pattern_menu:
         menu_x, menu_y = 20, 70
         item_height = 30
-
         menu_rect = pygame.Rect(
-            menu_x,
-            menu_y,
-            260,
-            len(pattern_names) * item_height
+            menu_x, menu_y, 260, len(pattern_names) * item_height
         )
-
-        pygame.draw.rect(
-            screen, (22, 28, 36), menu_rect
-        )
-        pygame.draw.rect(
-            screen, (80, 100, 115), menu_rect, 1
-        )
+        pygame.draw.rect(screen, (22, 28, 36), menu_rect)
+        pygame.draw.rect(screen, (80, 100, 115), menu_rect, 1)
 
         for index, name in enumerate(pattern_names):
             rect = pygame.Rect(
-                menu_x,
-                menu_y + index * item_height,
-                260,
-                item_height
+                menu_x, menu_y + index * item_height, 260, item_height
             )
-
-            pygame.draw.rect(
-                screen, (45, 60, 70), rect, 1
-            )
-
+            pygame.draw.rect(screen, (45, 60, 70), rect, 1)
             label = small_font.render(
-                f"{index + 1}. {name}",
-                True,
-                (230, 240, 245)
+                f"{index + 1}. {name}", True, (230, 240, 245)
             )
             screen.blit(label, (rect.x + 8, rect.y + 7))
 
@@ -486,12 +348,8 @@ while running:
 
     if running_simulation:
         current_time = pygame.time.get_ticks()
-
-        if (
-            current_time - last_update_time
-            >= generation_interval
-        ):
-            grid = next_generation(grid)
+        if current_time - last_update_time >= generation_interval:
+            alive_cells = next_generation(alive_cells)
             generation += 1
             last_update_time = current_time
 
