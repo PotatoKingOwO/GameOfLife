@@ -1,4 +1,6 @@
 import random
+from collections import deque
+
 import pygame
 
 pygame.init()
@@ -26,6 +28,9 @@ running_simulation = False
 generation_interval = 150
 last_update_time = 0
 generation = 0
+
+# Historie populace pro graf (posledních 400 hodnot)
+population_history = deque([0], maxlen=400)
 
 PATTERNS = {
     "Glider": [
@@ -66,7 +71,7 @@ PATTERNS = {
     ]
 }
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
 pygame.display.set_caption("Game of Life — Infinite World")
 font = pygame.font.SysFont(None, 28)
 small_font = pygame.font.SysFont(None, 20)
@@ -89,7 +94,6 @@ def count_neighbors(cells, x, y):
 
 
 def next_generation(cells):
-    """Spočítá další generaci bez procházení celého nekonečného světa."""
     candidates = set()
 
     for x, y in cells:
@@ -108,19 +112,24 @@ def next_generation(cells):
     return new_cells
 
 
+def reset_history():
+    population_history.clear()
+    population_history.append(len(alive_cells))
+
+
 def clear_world():
     alive_cells.clear()
+    reset_history()
 
 
 def randomize_visible_area():
-    """Náhodně osází oblast, kterou právě vidí kamera."""
     alive_cells.clear()
     left = camera_x // CELL_SIZE
     top = camera_y // CELL_SIZE
     right = (camera_x + WIDTH) // CELL_SIZE + 1
     bottom = (camera_y + HEIGHT) // CELL_SIZE + 1
 
-    max_random_cells = 180000
+    max_random_cells = 18000000
     if (right - left) * (bottom - top) > max_random_cells:
         center_x = (left + right) // 2
         center_y = (top + bottom) // 2
@@ -134,9 +143,10 @@ def randomize_visible_area():
             if random.random() < 0.22:
                 alive_cells.add((x, y))
 
+    reset_history()
+
 
 def screen_to_cell(pos):
-    """Převede pozici myši na souřadnice buňky ve světě."""
     mouse_x, mouse_y = pos
     world_x = (mouse_x + camera_x) // CELL_SIZE
     world_y = (mouse_y + camera_y) // CELL_SIZE
@@ -160,12 +170,59 @@ def draw_cell(x, y, color, outline=0):
         )
 
 
+def draw_population_graph():
+    w = min(260, WIDTH - 20)
+    h = min(120, HEIGHT // 3)
+    if w < 80 or h < 50:
+        return
+    x = WIDTH - w - 10
+    y = HEIGHT - h - 34
+
+    panel = pygame.Surface((w, h), pygame.SRCALPHA)
+    panel.fill((22, 28, 36, 215))
+    screen.blit(panel, (x, y))
+    pygame.draw.rect(screen, (80, 100, 115), (x, y, w, h), 1)
+
+    data = list(population_history)
+    max_v = max(max(data), 1)
+
+    title = small_font.render("Population", True, (190, 200, 210))
+    screen.blit(title, (x + 6, y + 4))
+    max_label = small_font.render(f"max {max_v}", True, (140, 155, 165))
+    screen.blit(max_label, (x + w - max_label.get_width() - 6, y + 4))
+    now_label = small_font.render(f"now {data[-1]}", True, ALIVE_COLOR)
+    screen.blit(now_label, (x + 6, y + h - now_label.get_height() - 4))
+
+    plot = pygame.Rect(x + 6, y + 24, w - 12, h - 24 - 22)
+    pygame.draw.line(screen, GRID_COLOR, (plot.left, plot.bottom), (plot.right, plot.bottom))
+
+    if len(data) >= 2:
+        n = len(data)
+        points = [
+            (
+                plot.left + i * (plot.width - 1) / (n - 1),
+                plot.bottom - v / max_v * plot.height,
+            )
+            for i, v in enumerate(data)
+        ]
+        pygame.draw.lines(screen, ALIVE_COLOR, False, points, 2)
+
+
 running = True
 
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+        elif event.type == pygame.VIDEORESIZE:
+            if pygame.version.vernum[0] < 2:
+                screen = pygame.display.set_mode(
+                    (event.w, event.h), pygame.RESIZABLE
+                )
+            else:
+                screen = pygame.display.get_surface()
+            WIDTH, HEIGHT = screen.get_size()
 
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
@@ -225,17 +282,16 @@ while running:
                 CELL_SIZE = max(MIN_CELL_SIZE, CELL_SIZE - 1)
 
             if CELL_SIZE != old_size:
-                # Zoomujeme kolem kurzoru: buňka pod kurzorem zůstane na místě.
                 camera_x = int((mouse_x + camera_x) * CELL_SIZE / old_size - mouse_x)
                 camera_y = int((mouse_y + camera_y) * CELL_SIZE / old_size - mouse_y)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 2:  # prostřední tlačítko = posun kamery
+            if event.button == 2:  
                 panning = True
                 pan_start_mouse = event.pos
                 pan_start_camera = (camera_x, camera_y)
 
-            elif event.button == 1:  # levé tlačítko = přidání buňky / vzor
+            elif event.button == 1:  
                 if show_pattern_menu:
                     menu_x, menu_y = 20, 70
                     item_height = 30
@@ -267,7 +323,6 @@ while running:
             if panning:
                 dx = pan_start_mouse[0] - event.pos[0]
                 dy = pan_start_mouse[1] - event.pos[1]
-                # Žádné omezování hranic: kamera se může pohybovat kamkoliv.
                 camera_x = pan_start_camera[0] + dx
                 camera_y = pan_start_camera[1] + dy
             elif not show_pattern_menu and not selected_pattern:
@@ -278,13 +333,15 @@ while running:
                 elif buttons[2]:
                     alive_cells.discard((x, y))
 
+    if not running_simulation:
+        population_history[-1] = len(alive_cells)
+
     screen.fill(BACKGROUND_COLOR)
 
     for x, y in alive_cells:
         screen_x = x * CELL_SIZE - camera_x
         screen_y = y * CELL_SIZE - camera_y
         if -CELL_SIZE < screen_x < WIDTH and -CELL_SIZE < screen_y < HEIGHT:
-            # Jemný barevný přechod podle pozice buňky na obrazovce.
             gx = max(0.0, min(1.0, screen_x / max(1, WIDTH)))
             gy = max(0.0, min(1.0, screen_y / max(1, HEIGHT)))
             red = int(35 + 65 * gx)
@@ -301,6 +358,8 @@ while running:
         pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, HEIGHT))
     for y in range(int(start_y), HEIGHT, CELL_SIZE):
         pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
+
+    draw_population_graph()
 
     status = "RUNNING" if running_simulation else "PAUSED"
     generation_text = font.render(
@@ -351,6 +410,7 @@ while running:
         if current_time - last_update_time >= generation_interval:
             alive_cells = next_generation(alive_cells)
             generation += 1
+            population_history.append(len(alive_cells))
             last_update_time = current_time
 
     clock.tick(60)
