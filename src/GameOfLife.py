@@ -29,7 +29,6 @@ generation_interval = 150
 last_update_time = 0
 generation = 0
 
-# Historie populace pro graf (posledních 400 hodnot)
 population_history = deque([0], maxlen=400)
 
 PATTERNS = {
@@ -82,7 +81,6 @@ show_pattern_menu = False
 
 
 def count_neighbors(cells, x, y):
-    """Vrátí počet živých sousedů buňky (x, y)."""
     count = 0
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
